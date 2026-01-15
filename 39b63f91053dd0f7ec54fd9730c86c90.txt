@@ -1,0 +1,866 @@
+// AUTOMATICALLY GENERATED: imported vars from saved link.
+var CONVERT_TO_IMPORT = (
+[{"type":"imageVisParam","name":"visNDVI","record":{"params":{"opacity":1,"bands":["NDVI"],"min":-0.0007144514729185147,"max":0.36401004903792333,"gamma":1}}},{"type":"imageCollection","name":"Landsat5_SR","record":{"id":"LANDSAT/LT05/C02/T1_L2"}},{"type":"imageCollection","name":"Landsat7_SR","record":{"id":"LANDSAT/LE07/C02/T1_L2"}},{"type":"imageCollection","name":"Landsat8_SR","record":{"id":"LANDSAT/LC08/C02/T1_L2"}},{"type":"imageCollection","name":"Landsat9_SR","record":{"id":"LANDSAT/LC09/C02/T1_L2"}},{"type":"image","name":"JRC_Water","record":{"id":"JRC/GSW1_4/GlobalSurfaceWater"}},{"type":"table","name":"AZ_all","record":{"id":"projects/alpinezone/assets/All/v3/AZ_all"}},{"type":"table","name":"USAZ_all","record":{"id":"projects/alpinezone/assets/All/v3/USAZ_all"}}])
+
+// AUTOMATICALLY GENERATED: location from saved link.
+Map.setCenter(264.8, 34.8, 4)
+
+// Earth Engine script "AlpineZone_NDVI" v3
+// Dartmouth College, Hanover NH USA
+
+// Mann-Kendall trend analysis from N. Clinton, here:
+// https://developers.google.com/earth-engine/tutorials/community/nonparametric-trends
+//
+// Revised to handle inter-satellite calibration for NDSI and other improvements
+// Revised to allow site-specific code to be edited at the top:
+
+
+// Ryan's copy
+
+// *** EDIT THIS PARAMETER FOR EACH SITE
+var siteName = "Alpine_Zone";
+var siteFolder = siteName + "_GEE_v3";
+// Before running this, be sure the above folder exists somewhere on your drive
+// E.g., "QC_JAC_GEE_Export_v3"
+
+
+// *** EDIT THESE PARAMETERS AS NEEDED
+var siteScale = 30;                     // Scale in meters for output GeoTIFFs
+var cloud_score = 25;                   // Max acceptable image-wide cloud threshold
+var start_month = 4;                    // Starting month for useable images (June)
+var end_month = 8;                      // Ending month for useable images (September)
+var startDateEarly = "1984-01-01";      // Start of first decade, for averaging
+var endDateEarly = "1993-12-31";        // End of first decade, for averaging
+var startDateLate = "2015-01-01";       // Start of last decade, for averaging
+var endDateLate = "2024-12-31";         // End of last decade, for averaging
+var startYear = 1984;                   // Start year for Mann-Kendall trend
+var endYear = 2024;                     // End year for Mann-Kendall trend
+var doAdjustNDVI = false;               // Adjust NDVI for older satellites?
+
+
+
+
+
+// Assume the first two characters are the state or province abbreviation
+var stateProvince = siteName.substring(0,2);
+
+// Construct variables based on this
+var azName = siteName + "_AZ";
+var usazName = siteName + "_USAZ";
+var timeSeriesAZ_all = "NDVI_timeseries_AZ_all"
+var timeSeriesAZ_pc50 = "NDVI_timeseries_AZ_pc50"
+var timeSeriesUSAZ_all = "NDVI_timeseries_USAZ_all"
+var timeSeriesUSAZ_pc50 = "NDVI_timeseries_USAZ_pc50"
+var nameKendallGeoTIFF = "kendall";
+var nameSignificantGeoTIFF = "kendall_significant";
+var namePvalGeoTIFF = "kendall_pval";
+var nameChangeGeoTIFF = "NDVI_change";
+var nameMeanGeoTIFF = "mean_allbands";
+var nameEarlyGeoTIFF = "NDVI_early";
+var nameLateGeoTIFF = "NDVI_late";
+var nameNdviGeoTIFF = "NDVI_mean";
+var namePositiveGeoTIFF = "kendall_positive";
+var nameNegativeGeoTIFF = "kendall_negative";
+var nameValidCountGeoTIFF = "valid_count";
+
+// Determine the appropriate UTM zone and CRS
+var siteCRS;
+switch(stateProvince) {
+  case "NY": siteCRS = 'EPSG:32618';
+    break;
+  case "VT": siteCRS = 'EPSG:32618';
+    break;
+  case "NH": siteCRS = 'EPSG:32619';
+    break;
+  case "ME": siteCRS = 'EPSG:32619';
+    break;
+  case "QC": siteCRS = 'EPSG:32619';
+    break;
+  case "NL": siteCRS = 'EPSG:32621';
+    break;
+  default: siteCRS = 'EPSG:32619';
+} 
+
+var alpineZone = ee.FeatureCollection(AZ_all)
+  .filter(ee.Filter.eq("SiteZone", azName))
+  .geometry();
+var usaz = ee.FeatureCollection(USAZ_all)
+  .filter(ee.Filter.eq("SiteZone", usazName))
+  .geometry();
+  
+var alpineZoneBounds = alpineZone.bounds(); // rectangle
+var usazBounds = usaz.bounds(); // rectangle
+
+// Combine study_area boundaries (rectangle) and buffer by 500m
+var study_area = alpineZoneBounds.union(usazBounds, 1).buffer(500).bounds(); 
+
+// Add boundaries to map
+Map.addLayer(study_area, null, 'StudyArea');
+Map.addLayer(alpineZone, null, 'AlpineZone');
+Map.addLayer(usaz, null, 'USAZ');
+
+// Brings map to center
+Map.centerObject(study_area, 11);
+
+
+
+// Filter Landsat data
+// (see definitions at top of code for start and end months, and cloud score)
+var allImages5 = ee.ImageCollection(Landsat5_SR
+  .filterMetadata("CLOUD_COVER", "less_than", cloud_score)
+  .filter(ee.Filter.calendarRange(start_month, end_month, 'month'))  
+  .filterBounds(study_area));
+var allImages7 = ee.ImageCollection(Landsat7_SR
+  .filterMetadata("CLOUD_COVER", "less_than", cloud_score)
+  .filter(ee.Filter.calendarRange(start_month, end_month, 'month'))  
+  .filterBounds(study_area));
+var allImages8 = ee.ImageCollection(Landsat8_SR
+  .filterMetadata("CLOUD_COVER", "less_than", cloud_score)
+  .filter(ee.Filter.calendarRange(start_month, end_month, 'month'))  
+  .filterBounds(study_area));
+var allImages9 = ee.ImageCollection(Landsat9_SR
+  .filterMetadata("CLOUD_COVER", "less_than", cloud_score)
+  .filter(ee.Filter.calendarRange(start_month, end_month, 'month'))  
+  .filterBounds(study_area));
+  
+// Count the number of images by each satellite
+var count5 = allImages5.size();
+print("Landsat-5 images: ", count5);
+var count7 = allImages7.size();
+print("Landsat-7 images: ", count7);
+var count8 = allImages8.size();
+print("Landsat-8 images: ", count8);
+var count9 = allImages9.size();
+print("Landsat-9 images: ", count9);
+
+// Rename Landsat bands (5 and 7, vs 8 and 9)
+var rename5_7 = function(myImage) {
+  var img = myImage.select(['SR_B1','SR_B2','SR_B3','SR_B4','SR_B5','SR_B7','QA_PIXEL','QA_RADSAT'])
+    .rename(['B','G','R','NIR','SWIR1','SWIR2','QA_PIXEL','QA_RADSAT']);
+  return img
+};
+// Rename Landsat 8 and Landsat 9 bands
+var rename8_9 = function(myImage) {
+  var img = myImage.select(['SR_B2','SR_B3','SR_B4','SR_B5','SR_B6','SR_B7','QA_PIXEL','QA_RADSAT'])
+    .rename(['B','G','R','NIR','SWIR1','SWIR2','QA_PIXEL','QA_RADSAT']);
+  return img
+};
+var renamed5 = allImages5.map(rename5_7);
+var renamed7 = allImages7.map(rename5_7);
+var renamed8 = allImages8.map(rename8_9);
+var renamed9 = allImages9.map(rename8_9);
+
+
+
+// Calculate NDSI, and adjust it for inter-satellite calibration differences
+// These differences were empirically calculated based on comparison of pairs of
+//    images from 6 alpine zone sites, taken 1 day apart, by different satellites.
+
+//Add a new band for NDSI (unadjusted)
+var addNDSI = function(myImage) {
+  var NDSI = myImage.normalizedDifference(["G","SWIR1"]).double();
+  return myImage
+  .addBands(NDSI.rename('NDSI'));
+};
+
+//Add a new band for NDSI2 (adjusted) on L5 & L7
+var addNDSI2_L57 = function(myImage) {
+  var NDSI2 = myImage.expression(
+    '1.1703 * NDSI + 0.0373', {
+      'NDSI': myImage.select('NDSI').double()
+  });
+  return myImage
+  .addBands(NDSI2.rename('NDSI2'));
+};
+
+//Add a new band for NDSI2 (no adjustment needed) on L8 & L9
+var addNDSI2_L89 = function(myImage) {
+  var NDSI2 = myImage.select('NDSI').double();
+  return myImage
+  .addBands(NDSI2.rename('NDSI2'));
+};
+
+
+
+
+// Apply various masks to remove non-usable image pixels
+
+// Mask images to remove clouds and saturated detector artifacts
+// For conservatism, apply a 2-pixel-wide buffer around masked areas
+var doMask_Cloud = function(myImage) {
+  // Bit 0 = Fill
+  // Bit 1 = Dilated Cloud
+  // Bit 2 = Cirrus (Landsat-8 only)
+  // Bit 3 = Cloud
+  // Bit 4 = Cloud Shadow
+  var qaMask = myImage
+    .clip(study_area).select('QA_PIXEL')
+    .bitwiseAnd(parseInt('11111',2)).neq(0);
+  var saturationMask = myImage
+    .clip(study_area).select('QA_RADSAT').neq(0);
+  var badPix = qaMask.or(saturationMask);
+  var badPixBuffer = badPix.focal_max({
+    radius: 60,
+    kernelType: 'circle',
+    units:'meters',
+    iterations: 1
+  });
+  var comboMask = badPixBuffer.eq(0); // get everything that is NOT bad
+  var imgMasked = myImage.updateMask(comboMask);
+  return imgMasked
+};
+
+
+// Mask images to remove water bodies
+// For conservatism, apply a 2-pixel-wide buffer around masked areas
+var doMask_Water = function (myImage) {
+  
+  var water = JRC_Water.select('max_extent').clip(study_area).eq(1);
+  var waterBuffer = water.focal_max({
+    radius: 60,
+    kernelType: 'circle',
+    units:'meters',
+    iterations: 1
+  });
+  var waterMask = waterBuffer.eq(0); // get everything that is NOT water
+  var imgMasked = myImage.updateMask(waterMask);
+  return imgMasked 
+// Previous method - not reliable enough?
+/*  var water = myImage
+    .clip(study_area).select("QA_PIXEL").bitwiseAnd(1 << 7).neq(0);  // Water  
+  var waterBuffer = water.focal_max({
+    radius: 60,
+    kernelType: 'circle',
+    units:'meters',
+    iterations: 1
+  });
+  var waterMask = waterBuffer.eq(0); // get everything that is NOT water
+  var imgMasked = myImage.updateMask(waterMask);
+  return imgMasked 
+  */
+};
+  
+  
+// Mask images to remove snow
+// Note this uses the adjusted NDSI; assumes values > 0 are problematic
+var doMask_Snow = function(myImage) {
+  var NDSI2 = myImage.select('NDSI2');
+  var snowMask = NDSI2.lt(0.0);
+  var imgMasked = myImage.updateMask(snowMask);
+  return imgMasked
+};
+
+
+//Add a new band for PixelCount
+// This gets done at the end of the following sequence, after all masks
+var addPixelCount = function(myImage) {
+  var n = myImage.select('NDVI');
+  var pc = n.gt(-99);
+  return myImage
+  .addBands(pc.rename('PixelCount'));
+};
+
+
+if (doAdjustNDVI) {
+  // Actually do the index calculations and apply the masks (except snow - see below)
+  var clearImages5 = renamed5.map(addNDVI).map(addNDSI).map(addNDSI2_L57).map(addNDVI2_L5)
+    .map(doMask_Cloud).map(doMask_Water).map(doMask_Snow).map(addPixelCount);
+  var clearImages7 = renamed7.map(addNDVI).map(addNDSI).map(addNDSI2_L57).map(addNDVI2_L7)
+    .map(doMask_Cloud).map(doMask_Water).map(doMask_Snow).map(addPixelCount);
+  var clearImages8 = renamed8.map(addNDVI).map(addNDSI).map(addNDSI2_L89).map(addNDVI2_L89)
+    .map(doMask_Cloud).map(doMask_Water).map(doMask_Snow).map(addPixelCount);
+  var clearImages9 = renamed9.map(addNDVI).map(addNDSI).map(addNDSI2_L89).map(addNDVI2_L89)
+    .map(doMask_Cloud).map(doMask_Water).map(doMask_Snow).map(addPixelCount);
+  
+  // Merge the images from all satellites
+  var clearImgs1 = clearImages5.merge(clearImages7).merge(clearImages8).merge(clearImages9);
+  
+  // Rename recalibrated NDVI and NDSI bands (and drop the original versions)
+  var renameNDVI_NDSI = function(myImage) {
+    var img = myImage.select(['B','G','R','NIR','SWIR1','SWIR2','QA_PIXEL','QA_RADSAT','NDSI2','NDVI2', 'PixelCount'])
+      .rename(['B','G','R','NIR','SWIR1','SWIR2','QA_PIXEL','QA_RADSAT','NDSI','NDVI', 'PixelCount']);
+    return img
+  };
+  var clearImages = clearImgs1.map(renameNDVI_NDSI);
+} // End of section for optional NDVI adjustment = true
+else {
+  // Actually do the index calculations and apply the masks (except snow - see below)
+  var clearImages5 = renamed5.map(addNDVI).map(addNDSI).map(addNDSI2_L57)
+    .map(doMask_Cloud).map(doMask_Water).map(doMask_Snow).map(addPixelCount);
+  var clearImages7 = renamed7.map(addNDVI).map(addNDSI).map(addNDSI2_L57)
+    .map(doMask_Cloud).map(doMask_Water).map(doMask_Snow).map(addPixelCount);
+  var clearImages8 = renamed8.map(addNDVI).map(addNDSI).map(addNDSI2_L89)
+    .map(doMask_Cloud).map(doMask_Water).map(doMask_Snow).map(addPixelCount);
+  var clearImages9 = renamed9.map(addNDVI).map(addNDSI).map(addNDSI2_L89)
+    .map(doMask_Cloud).map(doMask_Water).map(doMask_Snow).map(addPixelCount);
+  
+  // Merge the images from all satellites
+  var clearImgs1 = clearImages5.merge(clearImages7).merge(clearImages8).merge(clearImages9);
+  
+  // Rename recalibrated NDVI and NDSI bands (and drop the original versions)
+  var rename_NDSI = function(myImage) {
+    var img = myImage.select(['B','G','R','NIR','SWIR1','SWIR2','QA_PIXEL','QA_RADSAT','NDSI2', 'NDVI', 'PixelCount'])
+      .rename(['B','G','R','NIR','SWIR1','SWIR2','QA_PIXEL','QA_RADSAT','NDSI', 'NDVI', 'PixelCount']);
+    return img
+  };
+  var clearImages = clearImgs1.map(rename_NDSI);
+} // End of section for optional NDVI adjustment = false
+
+
+var overallMeanImage = clearImages.mean();
+Map.addLayer(overallMeanImage.select("NDVI"), visNDVI, 'NDVI');
+
+
+// Compute time series for AZ and USAZ, and export them as CSV files
+// As part of this process, calculate the % of valid pixels on each date
+
+// Calculate time series of mean NDVI for entire Alpine Zone
+var doReduceRegion = function(myImage) {
+  var mean = myImage.reduceRegion({
+    geometry:alpineZone, 
+    reducer:ee.Reducer.mean(), 
+    scale:siteScale
+  });
+  
+  var date = myImage.date().format();
+  var meanNDVI = mean.get('NDVI');
+  var satellite = myImage.get('SPACECRAFT_ID');
+  var path = myImage.get('WRS_PATH');
+  var row = myImage.get('WRS_ROW');
+  var date2 = myImage.get('DATE_ACQUIRED');    
+  return ee.Feature(null)
+  .set('date',date)
+  .set('meanNDVI',meanNDVI)
+  .set('satellite',satellite)
+  .set('path',path)
+  .set('row',row)
+  .set('date2',date2);
+}; // End of function doReduceRegion
+
+// Map the function and delete any rows with nulls from the output
+var statsAZ_ndvi = ee.FeatureCollection(clearImages.select('NDVI').map(doReduceRegion));
+var filteredAZ_ndvi = statsAZ_ndvi.filter(ee.Filter.neq('meanNDVI', null));
+
+// Calculate time series of valid pixel counts for entire Alpine Zone
+var doReduceRegion_PC = function(myImage) {
+  var sum = myImage.reduceRegion({
+    geometry:alpineZone, 
+    reducer:ee.Reducer.sum(), 
+    scale:siteScale
+  });
+  
+  var date = myImage.date().format();
+  var sumPixelCount = sum.get('PixelCount');
+  var satellite = myImage.get('SPACECRAFT_ID');
+  var path = myImage.get('WRS_PATH');
+  var row = myImage.get('WRS_ROW');
+  var date2 = myImage.get('DATE_ACQUIRED');    
+  return ee.Feature(null)
+  .set('date',date)
+  .set('sumPixelCount',sumPixelCount)
+  .set('satellite',satellite)
+  .set('path',path)
+  .set('row',row)
+  .set('date2',date2);
+}; // End of function doReduceRegion_PC
+
+// Map the function and delete any rows with nulls or zeros from the output
+var statsAZ_pc = ee.FeatureCollection(clearImages.select('PixelCount').map(doReduceRegion_PC));
+var filtered1 = statsAZ_pc.filter(ee.Filter.neq('sumPixelCount', null));
+var filteredAZ_pc = filtered1.filter(ee.Filter.neq('sumPixelCount', 0));
+
+// Join the tables for mean NDVI and valid pixel count
+var innerJoin = ee.Join.inner();
+
+// Specify an equals filter for image timestamps.
+var filterTimeEq = ee.Filter.equals({
+  leftField: 'date',
+  rightField: 'date'
+});
+
+// Join the NDVI and pixel count tables for AZ
+var innerJoinedAZ = innerJoin.apply(filteredAZ_ndvi, filteredAZ_pc, filterTimeEq);
+
+// Calculate percent coverage of valid pixels for AZ
+var statsAZ_pc_max = statsAZ_pc.aggregate_max('sumPixelCount');
+var calcPctValid = function(feature) {
+  var pc = feature.getNumber('secondary.sumPixelCount');
+  var pctValid = pc.divide(statsAZ_pc_max);
+  return feature.set('pctValid',pctValid);
+};
+var filteredAZ_all = innerJoinedAZ.map(calcPctValid);
+
+// Select only records with at least 50% valid pixels
+var filteredAZ_pc50 = filteredAZ_all.filter(ee.Filter.gte('pctValid', 0.5));
+
+Export.table.toDrive({
+  collection: ee.FeatureCollection(filteredAZ_all),
+  folder: siteFolder,
+  fileNamePrefix: timeSeriesAZ_all,
+  fileFormat: 'csv',
+  selectors: ['primary.date', 'primary.date2', 'primary.satellite', 'primary.path', 'primary.row', 'primary.meanNDVI', 'pctValid'],
+});
+
+Export.table.toDrive({
+  collection: ee.FeatureCollection(filteredAZ_pc50),
+  folder: siteFolder,
+  fileNamePrefix: timeSeriesAZ_pc50,
+  fileFormat: 'csv',
+  selectors: ['primary.date', 'primary.date2', 'primary.satellite', 'primary.path', 'primary.row', 'primary.meanNDVI', 'pctValid'],
+});
+
+
+// Calculate time series of mean NDVI for entire Upper SubAlpine Zone
+var doReduceRegion = function(myImage) {
+  var mean = myImage.reduceRegion({
+    geometry:usaz, 
+    reducer:ee.Reducer.mean(), 
+    scale:siteScale
+  });
+  
+  var date = myImage.date().format();
+  var meanNDVI = mean.get('NDVI');
+  var satellite = myImage.get('SPACECRAFT_ID');
+  var path = myImage.get('WRS_PATH');
+  var row = myImage.get('WRS_ROW');
+  var date2 = myImage.get('DATE_ACQUIRED');    
+  return ee.Feature(null)
+  .set('date',date)
+  .set('meanNDVI',meanNDVI)
+  .set('satellite',satellite)
+  .set('path',path)
+  .set('row',row)
+  .set('date2',date2);
+}; // End of function doReduceRegion
+
+// Map the function and delete any rows with nulls from the output
+var statsUSAZ_ndvi = ee.FeatureCollection(clearImages.select('NDVI').map(doReduceRegion));
+var filteredUSAZ_ndvi = statsUSAZ_ndvi.filter(ee.Filter.neq('meanNDVI', null));
+
+
+// Calculate time series of valid pixel counts for entire Alpine Zone
+var doReduceRegion_USAZ_PC = function(myImage) {
+  var sum = myImage.reduceRegion({
+    geometry:usaz, 
+    reducer:ee.Reducer.sum(), 
+    scale:siteScale
+  });
+  
+  var date = myImage.date().format();
+  var sumPixelCount = sum.get('PixelCount');
+  var satellite = myImage.get('SPACECRAFT_ID');
+  var path = myImage.get('WRS_PATH');
+  var row = myImage.get('WRS_ROW');
+  var date2 = myImage.get('DATE_ACQUIRED');    
+  return ee.Feature(null)
+  .set('date',date)
+  .set('sumPixelCount',sumPixelCount)
+  .set('satellite',satellite)
+  .set('path',path)
+  .set('row',row)
+  .set('date2',date2);
+}; // End of function doReduceRegion_PC
+
+// Map the function and delete any rows with nulls or zeros from the output
+var statsUSAZ_pc = ee.FeatureCollection(clearImages.select('PixelCount').map(doReduceRegion_USAZ_PC));
+var filtered1 = statsUSAZ_pc.filter(ee.Filter.neq('sumPixelCount', null));
+var filteredUSAZ_pc = filtered1.filter(ee.Filter.neq('sumPixelCount', 0));
+
+
+// Join the NDVI and pixel count tables for USAZ
+var innerJoinedUSAZ = innerJoin.apply(filteredUSAZ_ndvi, filteredUSAZ_pc, filterTimeEq);
+
+// Calculate percent coverage of valid pixels for USAZ
+var statsUSAZ_pc_max = statsUSAZ_pc.aggregate_max('sumPixelCount');
+var calcPctValid_USAZ = function(feature) {
+  var pc = feature.getNumber('secondary.sumPixelCount');
+  var pctValid = pc.divide(statsUSAZ_pc_max);
+  return feature.set('pctValid',pctValid);
+};
+var filteredUSAZ_all = innerJoinedUSAZ.map(calcPctValid_USAZ);
+
+// Select only records with at least 50% valid pixels
+var filteredUSAZ_pc50 = filteredUSAZ_all.filter(ee.Filter.gte('pctValid', 0.5));
+
+Export.table.toDrive({
+  collection: ee.FeatureCollection(filteredUSAZ_all),
+  folder: siteFolder,
+  fileNamePrefix: timeSeriesUSAZ_all,
+  fileFormat: 'csv',
+  selectors: ['primary.date', 'primary.date2', 'primary.satellite', 'primary.path', 'primary.row', 'primary.meanNDVI', 'pctValid'],
+});
+
+Export.table.toDrive({
+  collection: ee.FeatureCollection(filteredUSAZ_pc50),
+  folder: siteFolder,
+  fileNamePrefix: timeSeriesUSAZ_pc50,
+  fileFormat: 'csv',
+  selectors: ['primary.date', 'primary.date2', 'primary.satellite', 'primary.path', 'primary.row', 'primary.meanNDVI', 'pctValid'],
+});
+
+
+
+
+
+
+// Calculate various images for export
+
+// First, an image with the overall mean across entire time period, for all bands
+var overallMeanImage = clearImages.mean();
+Map.addLayer(overallMeanImage.select("NDVI"), visNDVI, 'NDVI');
+
+// Calculate the mean NDVI from the first and last decades 
+// (see top of code for definitions):
+var earlyImages = clearImages
+  .filterDate(startDateEarly, endDateEarly);
+var lateImages = clearImages
+  .filterDate(startDateLate, endDateLate);
+var getEarlyNDVI = earlyImages.select("NDVI");
+var getLateNDVI = lateImages.select("NDVI");
+var earlyMean = getEarlyNDVI.reduce(ee.Reducer.mean());
+var lateMean = getLateNDVI.reduce(ee.Reducer.mean());
+
+// Calculate the change in NDVI between first and last decades
+var changeNDVI = lateMean.subtract(earlyMean)
+Map.addLayer(changeNDVI, null, 'Change in NDVI');
+
+// Calculate the # of valid image dates per pixel
+var getPixelCount = clearImages.select("PixelCount");
+var validCount = getPixelCount.reduce(ee.Reducer.sum());
+var validCountInt = validCount.toInt();
+
+
+// Make annual summer mean images from image collection, for each year
+// These will be used as input to the Mann-Kendall test
+// (we want 1 datum per year, not 1 per image date)
+
+
+// Iterator to loop over years
+var Year;
+
+// Within a given year, this is the starting and ending day (usually Jan 1 and Dec 31)
+// (however, note that above we started with only images during growing season months.)
+var yrStartDate;
+var yrEndDate;
+
+// For a given year, this is an image containing the mean value in each band
+var meanImage;
+
+// An image collection for all years, to be filled with individual years
+var annualImages;
+var annualImages_List = ee.List([]);
+
+// Loop over all years, to get the range for each year
+// (See top of code for definitions of starting and ending year.)
+for (Year=startYear; Year<=endYear;Year++) {
+  yrStartDate = ee.Date.fromYMD(Year, 1, 1);
+  yrEndDate = ee.Date.fromYMD(Year, 12, 31);
+ 
+  // Select this year's images
+  var selectedImages = clearImages.filterDate(yrStartDate, yrEndDate);
+
+  var count = selectedImages.size().getInfo();
+  print(String(Year) + ": " + count);
+
+  // Test to make sure there is at least 1 image in this year
+  if (count > 0) {
+	var meanImage = selectedImages
+	.mean()
+	.clip(study_area);
+	annualImages_List = annualImages_List.add(meanImage);
+  }
+    
+} // End of loop over years
+
+// Make an ImageCollection from the list of images (1 per year)
+annualImages = ee.ImageCollection.fromImages(annualImages_List);
+
+// Commented out, but can be used for testing:
+// Display image #31 (2014?) as an example
+// I recommend displaying this with bands SWIR1, NIR, R using a 98% stretch
+// or a 2-sigma stretch or something.
+// var myImg=ee.Image(annualImages_List.get(31));
+// Map.addLayer(myImg, null, "2014 image");
+
+
+
+
+// MANN-KENDALL NONPARAMETRIC TREND ANALYSIS
+// From here: 
+// https://developers.google.com/earth-engine/tutorials/community/nonparametric-trends
+
+
+// Need to have integer (non-floating-point) version of NDSI
+var addNDSI_Int = function(myImage) {
+  var NDSI_Int = myImage.select('NDSI').multiply(10000).toInt();
+  return myImage
+  .addBands(NDSI_Int.rename('NDSI_Int'));
+};
+
+// Add the integer version of NDVI band onto each image in the collection
+var clearImages2 = annualImages.map(addNDSI_Int);
+var coll = clearImages2.select('NDSI_Int');
+
+
+// Start by joining the time-series to itself (each image linked to all later images)
+// Note: In the original, leftField and rightField below are "system:time_start"
+// But that property is not preserved when the images are aggregated by year
+var afterFilter = ee.Filter.lessThan({
+  leftField: 'system:index',
+  rightField: 'system:index'
+});
+
+var joined = ee.ImageCollection(ee.Join.saveAll('after').apply({
+  primary: coll,
+  secondary: coll,
+  condition: afterFilter
+}));
+
+
+// Compute the Mann-Kendall trend statistic
+var sign = function(i, j) { // i and j are images
+  return ee.Image(j).neq(i) // Zero case
+      .multiply(ee.Image(j).subtract(i).clamp(-1, 1)).int();
+};
+
+var kendall = ee.ImageCollection(joined.map(function(current) {
+  var afterCollection = ee.ImageCollection.fromImages(current.get('after'));
+  return afterCollection.map(function(image) {
+    // The unmask is to prevent accumulation of masked pixels that
+    // result from the undefined case of when either current or image
+    // is masked.  It won't affect the sum, since it's unmasked to zero.
+    return ee.Image(sign(current, image)).unmask(0);
+  });
+  // Set parallelScale to avoid User memory limit exceeded.
+}).flatten()).reduce('sum', 2);
+
+// Set the layer symbology and display it on the map
+var palette = ['red', 'white', 'green'];
+var vizKendall = {
+  bands: ['NDSI_Int_sum'],
+  min: -50,
+  max: 50,
+  palette: palette
+};
+Map.addLayer(kendall, vizKendall, 'kendall');
+
+
+// Next, calculate the variance of the Mann-Kendall statistic
+// Values that are in a group (ties).  Set all else to zero.
+var groups = coll.map(function(i) {
+  var matches = coll.map(function(j) {
+    return i.eq(j); // i and j are images.
+  }).sum();
+  return i.multiply(matches.gt(1));
+});
+
+// Compute tie group sizes in a sequence.  The first group is discarded.
+var group = function(array) {
+  var length = array.arrayLength(0);
+  // Array of indices.  These are 1-indexed.
+  var indices = ee.Image([1])
+      .arrayRepeat(0, length)
+      .arrayAccum(0, ee.Reducer.sum())
+      .toArray(1);
+  var sorted = array.arraySort();
+  var left = sorted.arraySlice(0, 1);
+  var right = sorted.arraySlice(0, 0, -1);
+  // Indices of the end of runs.
+  var mask = left.neq(right)
+  // Always keep the last index, the end of the sequence.
+      .arrayCat(ee.Image(ee.Array([[1]])), 0);
+  var runIndices = indices.arrayMask(mask);
+  // Subtract the indices to get run lengths.
+  var groupSizes = runIndices.arraySlice(0, 1)
+      .subtract(runIndices.arraySlice(0, 0, -1));
+  return groupSizes;
+};
+
+// See equation 2.6 in Sen (1968).
+var factors = function(image) {
+  return image.expression('b() * (b() - 1) * (b() * 2 + 5)');
+};
+
+var groupSizes = group(groups.toArray());
+var groupFactors = factors(groupSizes);
+var groupFactorSum = groupFactors.arrayReduce('sum', [0])
+      .arrayGet([0, 0]);
+
+var count = joined.count();
+
+var kendallVariance = factors(count)
+    .subtract(groupFactorSum)
+    .divide(18)
+    .float();
+// Map.addLayer(kendallVariance, {min: 1700, max: 85000}, 'kendallVariance');
+
+
+// Next, significance testing for the Mann-Kendall trend
+// Compute Z-statistics.
+var zero = kendall.multiply(kendall.eq(0));
+var pos = kendall.multiply(kendall.gt(0)).subtract(1);
+var neg = kendall.multiply(kendall.lt(0)).add(1);
+
+var z = zero
+    .add(pos.divide(kendallVariance.sqrt()))
+    .add(neg.divide(kendallVariance.sqrt()));
+// Map.addLayer(z, {min: -2, max: 2}, 'z');
+
+
+// Next, the cumulative distribution function
+// https://en.wikipedia.org/wiki/Error_function#Cumulative_distribution_function
+function eeCdf(z) {
+  return ee.Image(0.5)
+      .multiply(ee.Image(1).add(ee.Image(z).divide(ee.Image(2).sqrt()).erf()));
+}
+
+function invCdf(p) {
+  return ee.Image(2).sqrt()
+      .multiply(ee.Image(p).multiply(2).subtract(1).erfInv());
+}
+
+
+// Finally, compute P-values.
+var p = ee.Image(1).subtract(eeCdf(z.abs()));
+// Map.addLayer(p, {min: 0, max: 1}, 'p');
+
+// Pixels that can have the null hypothesis (there is no trend) rejected.
+// Specifically, if the true trend is zero, there would be less than 5%
+// chance of randomly obtaining the observed result (that there is a trend).
+var significant = p.lte(0.025);
+Map.addLayer(p.lte(0.025), {min: 0, max: 1}, 'significant trends');
+
+
+// Make imags for significant positive and significant negative trends
+var sigPos = significant.multiply(kendall.gt(0));
+var sigNeg = significant.multiply(kendall.lt(0));
+
+
+
+
+
+
+// EXPORTS
+
+// kendall
+var kendallForExport = kendall.double();
+Export.image.toDrive({
+  image: kendallForExport,
+  description: nameKendallGeoTIFF,
+  folder: siteFolder,
+  region: study_area,  // full image bounds
+  scale: siteScale,  // large scale for minimal demo
+  crs: siteCRS,
+  fileFormat: 'GeoTIFF'
+  });
+
+// Kendall pvalues
+Export.image.toDrive({
+  image: p,
+  description: namePvalGeoTIFF,
+  folder: siteFolder,
+  region: study_area,  // full image bounds
+  scale: siteScale,  // large scale for minimal demo
+  crs: siteCRS,
+  fileFormat: 'GeoTIFF'
+  });
+
+// Kendall significant pixels
+Export.image.toDrive({
+  image: significant,
+  description: nameSignificantGeoTIFF,
+  folder: siteFolder,
+  region: study_area,  // full image bounds
+  scale: siteScale,  // large scale for minimal demo
+  crs: siteCRS,
+  fileFormat: 'GeoTIFF'
+  });
+
+// NDVI change image
+Export.image.toDrive({
+  image: changeNDVI,
+  description: nameChangeGeoTIFF,
+  folder: siteFolder,
+  region: study_area,  // full image bounds
+  scale: siteScale,  // large scale for minimal demo
+  crs: siteCRS,
+  fileFormat: 'GeoTIFF'
+  });
+  
+// all bands
+Export.image.toDrive({
+  image: overallMeanImage,
+  description: nameMeanGeoTIFF,
+  folder: siteFolder,
+  region: study_area,  // full image bounds
+  scale: siteScale,  // large scale for minimal demo
+  crs: siteCRS,
+  fileFormat: 'GeoTIFF'
+  });
+  
+// Early NDVI
+Export.image.toDrive({
+  image: earlyMean,
+  description: nameEarlyGeoTIFF,
+  folder: siteFolder,
+  region: study_area,  // full image bounds
+  scale: siteScale,  // large scale for minimal demo
+  crs: siteCRS,
+  fileFormat: 'GeoTIFF'
+  });
+  
+// Late NDVI
+Export.image.toDrive({
+  image: lateMean,
+  description: nameLateGeoTIFF,
+  folder: siteFolder,
+  region: study_area,  // full image bounds
+  scale: siteScale,  // large scale for minimal demo
+  crs: siteCRS,
+  fileFormat: 'GeoTIFF'
+  });
+  
+// Mean NDVI
+Export.image.toDrive({
+  image: overallMeanImage.select('NDVI'),
+  description: nameNdviGeoTIFF,
+  folder: siteFolder,
+  region: study_area,  // full image bounds
+  scale: siteScale,  // large scale for minimal demo
+  crs: siteCRS,
+  fileFormat: 'GeoTIFF'
+  });
+  
+// Positive significant trend pixels
+Export.image.toDrive({
+  image: sigPos,
+  description: namePositiveGeoTIFF,
+  folder: siteFolder,
+  region: study_area,  // full image bounds
+  scale: siteScale,  // large scale for minimal demo
+  crs: siteCRS,
+  fileFormat: 'GeoTIFF'
+  });
+  
+// Negative significant trend pixels
+Export.image.toDrive({
+  image: sigNeg,
+  description: nameNegativeGeoTIFF,
+  folder: siteFolder,
+  region: study_area,  // full image bounds
+  scale: siteScale,  // large scale for minimal demo
+  crs: siteCRS,
+  fileFormat: 'GeoTIFF'
+  });
+  
+// Count of valid image dates per pixel
+Export.image.toDrive({
+  image: validCountInt,
+  description: nameValidCountGeoTIFF,
+  folder: siteFolder,
+  region: study_area,  // full image bounds
+  scale: siteScale,  // large scale for minimal demo
+  crs: siteCRS,
+  fileFormat: 'GeoTIFF'
+  });
+
