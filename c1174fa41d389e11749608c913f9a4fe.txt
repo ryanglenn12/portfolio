@@ -1,0 +1,195 @@
+// AUTOMATICALLY GENERATED: imported vars from saved link.
+var CONVERT_TO_IMPORT = (
+[{"type":"imageCollection","name":"HCHO","record":{"id":"NASA/TEMPO/HCHO_L3_QA"}},{"type":"imageCollection","name":"NO2","record":{"id":"NASA/TEMPO/NO2_L3_QA"}},{"type":"table","name":"Air_basins","record":{"id":"projects/ears65-f25-475022/assets/Air_Basin"}},{"type":"geometry","name":"geometry","record":{"geometries":[{"type":"Polygon","coordinates":[[[-120.87230860419335,34.43633029702568],[-120.87230860419335,31.730469317639866],[-117.46654688544335,31.730469317639866],[-117.46654688544335,34.43633029702568]]],"geodesic":false,"evenOdd":true}],"displayProperties":[{"type":"rectangle"}],"properties":{},"color":"#98ff00","mode":"Geometry","shown":false,"locked":false}},{"type":"table","name":"Palisades","record":{"id":"projects/ears65-f25-475022/assets/Palisades_Perimeter_20250121"}},{"type":"table","name":"Eaton","record":{"id":"projects/ears65-f25-475022/assets/Eaton_Perimeter_20250121"}}])
+
+// AUTOMATICALLY GENERATED: location from saved link.
+Map.setCenter(264.8, 34.8, 4)
+
+// adds LA air basin shapefile and maps it 
+// we don't end up using this for anlaysis because we use fire shapefiles instead
+var LA_Basin = Air_basins.filter(ee.Filter.eq('ID', 2));
+Map.addLayer(LA_Basin, {}, "Air basins")
+
+// merge Palisades and Eaton fire shapefiles into one
+var merged_fires = Palisades.merge(Eaton);
+
+// Define date ranges of interest
+// during-fire date range
+var startDate = ee.Date('2025-01-07');
+var endDate = ee.Date('2025-01-31');
+
+// pre-fire date range
+var startPre = ee.Date('2024-12-01');
+var endPre = ee.Date('2025-01-07');
+
+// post-fire date range
+var startPost = ee.Date('2025-01-31');
+var endPost = ee.Date('2025-03-31');
+
+// Filter datasets by date ranges and bounds
+// Filtering for during-fire 
+var HCHO_filtered = HCHO
+  .filterDate(startDate, endDate)
+  .filterBounds(merged_fires);
+var NO2_filtered = NO2
+  .filterDate(startDate, endDate)
+  .filterBounds(merged_fires);
+  
+// Filtering for pre-fire
+var HCHO_filtered_pre = HCHO
+  .filterDate(startPre, endPre)
+  .filterBounds(merged_fires);
+var NO2_filtered_pre  = NO2
+  .filterDate(startPre, endPre)
+  .filterBounds(merged_fires);
+ 
+// Filtering for post-fire
+var HCHO_filtered_post = HCHO
+  .filterDate(startPost, endPost)
+  .filterBounds(merged_fires);
+var NO2_filtered_post = NO2
+  .filterDate(startPost, endPost)
+  .filterBounds(merged_fires);
+
+// Calculating mean HCHO and NO2 over filtered data
+// for during-fire images:
+var HCHO_mean = HCHO_filtered.map(function(img) {
+  var mean = img.reduceRegion({
+    reducer: ee.Reducer.mean(),
+    geometry: merged_fires.geometry(), // .geometry() if using a the rectangular over-ocean polygon instead of fires
+    scale: 1000,
+    maxPixels: 1e13
+  });
+  return ee.Feature(null, {
+    'date': img.date().format('YYYY-MM-dd'),
+    'HCHO_mean': mean.get('vertical_column')
+  });
+});
+var duringList = HCHO_mean.aggregate_array('HCHO_mean'); 
+var duringMean = ee.Number(duringList.reduce(ee.Reducer.mean()));
+
+var NO2_mean = NO2_filtered.map(function(img) {
+  var mean = img.reduceRegion({
+    reducer: ee.Reducer.mean(),
+    geometry: merged_fires.geometry(), // .geometry() if using a polygon you did not create yourself
+    scale: 1000,
+    maxPixels: 1e13
+  });
+  return ee.Feature(null, {
+    'date': img.date().format('YYYY-MM-dd'),
+    'NO2_mean': mean.get('vertical_column_troposphere')
+  });
+});
+var duringList1 = NO2_mean.aggregate_array('NO2_mean');
+var duringMean1 = ee.Number(duringList1.reduce(ee.Reducer.mean()));
+
+// for pre-fire images:
+var HCHO_mean_pre = HCHO_filtered_pre.map(function(img) {
+  var mean = img.reduceRegion({
+    reducer: ee.Reducer.mean(),
+    geometry: merged_fires.geometry(), // .geometry() if using a polygon you did not create yourself
+    scale: 1000,
+    maxPixels: 1e13
+  });
+  return ee.Feature(null, {
+    'date': img.date().format('YYYY-MM-dd'),
+    'HCHO_mean': mean.get('vertical_column')
+  });
+});
+var duringList2 = HCHO_mean_pre.aggregate_array('HCHO_mean');
+var duringMean2 = ee.Number(duringList2.reduce(ee.Reducer.mean()));
+
+var NO2_mean_pre = NO2_filtered_pre.map(function(img) {
+  var mean = img.reduceRegion({
+    reducer: ee.Reducer.mean(),
+    geometry: merged_fires.geometry(), // .geometry() if using a polygon you did not create yourself
+    scale: 1000,
+    maxPixels: 1e13
+  });
+  return ee.Feature(null, {
+    'date': img.date().format('YYYY-MM-dd'),
+    'NO2_mean': mean.get('vertical_column_troposphere')
+  });
+});
+var duringList3 = NO2_mean_pre.aggregate_array('NO2_mean');
+var duringMean3 = ee.Number(duringList3.reduce(ee.Reducer.mean()));
+
+// For post-fire images:
+var HCHO_mean_post = HCHO_filtered_post.map(function(img) {
+  var mean = img.reduceRegion({
+    reducer: ee.Reducer.mean(),
+    geometry: merged_fires.geometry(), // .geometry() if using a polygon you did not create yourself
+    scale: 1000,
+    maxPixels: 1e13
+  });
+  return ee.Feature(null, {
+    'date': img.date().format('YYYY-MM-dd'),
+    'HCHO_mean': mean.get('vertical_column')
+  });
+});
+var duringList4 = HCHO_mean_post.aggregate_array('HCHO_mean');
+var duringMean4 = ee.Number(duringList4.reduce(ee.Reducer.mean()));
+
+var NO2_mean_post = NO2_filtered_post.map(function(img) {
+  var mean = img.reduceRegion({
+    reducer: ee.Reducer.mean(),
+    geometry: merged_fires.geometry(), // .geometry() if using a polygon you did not create yourself
+    scale: 1000,
+    maxPixels: 1e13
+  });
+  return ee.Feature(null, {
+    'date': img.date().format('YYYY-MM-dd'),
+    'NO2_mean': mean.get('vertical_column_troposphere')
+  });
+});
+var duringList5 = NO2_mean_post.aggregate_array('NO2_mean');
+var duringMean5 = ee.Number(duringList5.reduce(ee.Reducer.mean()));
+
+// Convert feature collections to charts
+var HCHO_chart = ui.Chart.feature.byFeature(HCHO_mean, 'date', 'HCHO_mean') // edit as needed
+  .setOptions({
+    title: 'Time Series of Mean HCHO over Fires (Jan 7 to Jan 31 2025)', // edit as needed
+    hAxis: {title: 'Date'},
+    vAxis: {title: 'HCHO (molec/cm2)'},
+    lineWidth: 2,
+    pointSize: 3,
+    series: {0: {color: 'orange'}}
+  });
+
+var NO2_chart = ui.Chart.feature.byFeature(NO2_mean, 'date', 'NO2_mean') // edit as needed
+  .setOptions({
+    title: 'Time Series of Mean NO₂ over Fires (Jan 7 to Jan 31 2025)', // edit as needed
+    hAxis: {title: 'Date'},
+    vAxis: {title: 'NO₂ (molec/cm2)'},
+    lineWidth: 2,
+    pointSize: 3,
+    series: {0: {color: 'blue'}}
+  });
+
+// Print charts to the console
+print(HCHO_chart);
+print(NO2_chart);
+
+// Print mean values to the console (then copied into Excel to graph) 
+print(duringMean1);
+print(duringMean2);
+print(duringMean3);
+print(duringMean4);
+print(duringMean5);
+print(duringMean);
+
+// Visualize average maps for the entire period
+var meanHCHO_img = HCHO_filtered.mean().select('vertical_column').clip(merged_fires);
+var meanNO2_img = NO2_filtered.mean().select('vertical_column_troposphere').clip(merged_fires);
+
+Map.addLayer(meanHCHO_img, {
+  palette: ['green', 'white', 'red'],
+  min: 0,
+  max: 10000000000000000
+}, 'Mean HCHO (Dec 2024 - Mar 2025)');
+
+Map.addLayer(meanNO2_img, {
+  palette: ['green', 'white', 'red'],
+  min: 0,
+  max: 10000000000000000
+}, 'Mean NO2 (Dec 2024 - Mar 2025)');
