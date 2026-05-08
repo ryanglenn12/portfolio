@@ -1,0 +1,234 @@
+
+
+# ──  Getting exceedance rasters ──────────────────────────────────────
+import arcpy
+from arcpy.sa import *
+import os
+
+arcpy.env.workspace      = r"D:\Ryan\Thesis\Palisades_TEMPO\TEMPO_PM25\TEMPO_PM25_tif"
+arcpy.env.overwriteOutput = True
+
+clip_mask   = r"D:\Ryan\Thesis\Palisades_TEMPO\LA_air_basin.shp"  # your polygon
+output_root = r"D:\Ryan\Thesis\Palisades_TEMPO\TEMPO_PM25\exceedance_output"
+
+
+# Create output folders
+thresholds = {
+    "moderate":          (12.1, 35.5),
+    "unhealthy_sensitive": (35.5, 55.5),
+    "unhealthy":         (55.5, None)   # None = no upper bound
+}
+
+for name in thresholds:
+    os.makedirs(os.path.join(output_root, name), exist_ok=True)
+
+clipped_folder = os.path.join(output_root, "clipped")
+os.makedirs(clipped_folder, exist_ok=True)
+
+# ── Main Loop ──────────────────────────────────────────────────────
+rasters = arcpy.ListRasters("*", "TIF")  # adjust extension if needed
+
+for raster_name in rasters:
+    print(f"Processing: {raster_name}")
+    raster = Raster(raster_name)
+
+    # Step 1: Clip to LA urban area polygon
+    clipped = ExtractByMask(raster, clip_mask)
+    clipped_path = os.path.join(clipped_folder, "clip_" + raster_name)
+    clipped.save(clipped_path)
+
+    # Step 2: Generate binary exceedance raster for each threshold
+    for category, (low, high) in thresholds.items():
+
+        if high is None:
+            # Unhealthy: anything above lower bound
+            exceed = Con(clipped > low, 1, 0)
+        else:
+            # Bounded range: pixel must fall within [low, high]
+            exceed = Con((clipped > low) & (clipped <= high), 1, 0)
+
+        out_path = os.path.join(output_root, category, f"{category}_{raster_name}")
+        exceed.save(out_path)
+        print(f"  ✓ {category} saved")
+
+print("All rasters processed.")
+
+
+
+
+# ── Daily Sum loop for each date and category────────────────────────────────
+for category in thresholds:
+    cat_folder = os.path.join(output_root, category)
+    arcpy.env.workspace = cat_folder
+    cat_rasters = sorted(arcpy.ListRasters())
+
+    for date_str, group in groupby(cat_rasters,
+                                   key=lambda x: x.split("_V01_")[1][0:8]):
+        daily = list(group)
+        print(f"  Summing {len(daily)} rasters for {date_str} – {category}")
+
+        daily_sum = CellStatistics(daily, "SUM", "DATA")
+        out_name  = os.path.join(output_root, "daily_hours",
+                                 category, f"hrs_{category}_{date_str}.tif")
+        daily_sum.save(out_name)
+
+
+
+import arcpy
+from arcpy.sa import *
+import os
+import pandas as pd
+
+# ── Configuration ──────────────────────────────────────────────────
+arcpy.env.overwriteOutput = True
+
+output_root    = r"D:\Ryan\Thesis\Palisades_TEMPO\TEMPO_PM25\exceedance_output"
+zone_shapefile = r"D:\Ryan\Thesis\Palisades_TEMPO\LA_air_basin.shp"  # ← update this path
+zone_field     = "AirBasins"          # ← update if needed
+zonal_folder   = os.path.join(output_root, "zonal_stats")
+os.makedirs(zonal_folder, exist_ok=True)
+
+threshold_names = ["moderate", "unhealthy_sensitive", "unhealthy"]
+
+# ── Move all_rows OUTSIDE the category loop to collect everything ──
+all_rows = []
+
+for category in threshold_names:
+    print(f"\n── Processing: {category} ──")
+    daily_folder = os.path.join(output_root, "daily_hours", category)
+
+    if not os.path.exists(daily_folder):
+        print(f"  ⚠ Folder not found: {daily_folder}, skipping.")
+        continue
+
+    daily_rasters = sorted([
+        f for f in os.listdir(daily_folder)
+        if f.endswith(".tif")
+    ])
+
+    if not daily_rasters:
+        print(f"  ⚠ No .tif files found in: {daily_folder}, skipping.")
+        continue
+
+    print(f"  Found {len(daily_rasters)} rasters")
+
+pixel_area_km2 = (2000 ** 2) / 1e6  # 4 km² per pixel at 2km resolution
+
+for raster_name in daily_rasters:
+    date_str    = raster_name[-12:-4]
+    raster_path = os.path.join(daily_folder, raster_name)
+    out_table   = os.path.join(zonal_folder, f"zonal_{category}_{date_str}.dbf")
+
+    print(f"  Running zonal stats: {category} – {date_str}")
+
+    # Step 1: Load daily sum raster (values 0-8 = hours exceeded)
+    daily_sum_raster = Raster(raster_path)
+
+    # Step 2: Create binary raster — 1 if exceeded at all, 0 if never
+    # This is the key step that was missing before
+    exceeded_binary = Con(daily_sum_raster > 0, 1, 0)
+
+    # Step 3: Run zonal stats on binary raster
+    # SUM now = number of pixels that exceeded threshold at least once that day
+    ZonalStatisticsAsTable(
+        in_zone_data    = zone_shapefile,
+        zone_field      = zone_field,
+        in_value_raster = exceeded_binary,
+        out_table       = out_table,
+        ignore_nodata   = "DATA",
+        statistics_type = "ALL"
+    )
+
+    arr = arcpy.da.TableToNumPyArray(out_table, "*")
+    df  = pd.DataFrame(arr)
+
+    # Step 4: Calculate true exceedance area from pixel count
+    # SUM = pixels where threshold exceeded, multiply by area per pixel
+    df["exceedance_area_km2"] = df["SUM"] * pixel_area_km2
+
+    # Step 5: Also get average hours exceeded from original daily sum raster
+    # Run a second zonal stats on the raw sum raster for hours metrics
+    out_table_hrs = os.path.join(zonal_folder, f"zonal_hrs_{category}_{date_str}.dbf")
+    ZonalStatisticsAsTable(
+        in_zone_data    = zone_shapefile,
+        zone_field      = zone_field,
+        in_value_raster = daily_sum_raster,
+        out_table       = out_table_hrs,
+        ignore_nodata   = "DATA",
+        statistics_type = "ALL"
+    )
+
+    arr_hrs = arcpy.da.TableToNumPyArray(out_table_hrs, "*")
+    df_hrs  = pd.DataFrame(arr_hrs)
+
+    # Combine area and hours into one row
+    df["mean_hours_exceeded"] = df_hrs["MEAN"]
+    df["max_hours_exceeded"]  = df_hrs["MAX"]
+    df["date"]                = pd.to_datetime(date_str, format="%Y%m%d")
+    df["category"]            = category
+
+    all_rows.append(df)
+    print(f"  ✓ {date_str}: {df['exceedance_area_km2'].values[0]:,.1f} km² exceeded")
+
+
+# ── Combine all categories and export to single CSV ───────────────
+if all_rows:
+    combined = pd.concat(all_rows, ignore_index=True)
+    combined = combined.sort_values(["date", "category"]).reset_index(drop=True)
+    csv_path = os.path.join(zonal_folder, "timeseries_all_thresholds.csv")
+    combined.to_csv(csv_path, index=False)
+    print(f"\n✅ Combined CSV exported: {csv_path}")
+    print(f"   Total rows: {len(combined)}")
+    print(combined.head(10))
+else:
+    print("\n⚠ No data collected — CSV not written.")
+
+
+# ── Categorizing each raster into its own file ───────────────
+
+import arcpy
+from arcpy.sa import *
+import os
+from itertools import groupby
+
+arcpy.env.overwriteOutput = True
+
+output_root     = r"D:\Ryan\Thesis\Palisades_TEMPO\TEMPO_PM25\exceedance_output"
+threshold_names = ["moderate", "unhealthy_sensitive", "unhealthy"]
+
+for category in threshold_names:
+    print(f"\n── {category} ──")
+
+    cat_folder    = os.path.join(output_root, category)
+    daily_bin_folder = os.path.join(output_root, "daily_binary", category)
+    os.makedirs(daily_bin_folder, exist_ok=True)
+
+    # List all binary rasters for this category
+    all_rasters = sorted([
+        f for f in os.listdir(cat_folder)
+        if f.endswith(".tif")
+    ])
+
+    if not all_rasters:
+        print(f"  ⚠ No rasters found, skipping.")
+        continue
+
+    # Group hourly rasters by date
+    for date_str, group in groupby(all_rasters,
+                                   key=lambda x: x.split("_V01_")[1][0:8]):
+        hourly = list(group)
+        hourly_paths = [os.path.join(cat_folder, r) for r in hourly]
+        print(f"  {date_str}: collapsing {len(hourly)} hourly rasters")
+
+        # Step 1a: Sum all hourly binary rasters for this day
+        daily_sum = CellStatistics(hourly_paths, "SUM", "DATA")
+
+        # Step 1b: Convert to daily binary — did pixel exceed at all today?
+        daily_binary = Con(daily_sum > 0, 1, 0)
+
+        out_path = os.path.join(daily_bin_folder,
+                                f"dailybin_{category}_{date_str}.tif")
+        daily_binary.save(out_path)
+        print(f"  ✓ Saved: dailybin_{category}_{date_str}.tif")
+
+print("\n✅ All daily binary rasters created.")
