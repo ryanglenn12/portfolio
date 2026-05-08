@@ -1,0 +1,410 @@
+// adds LA air basin shapefile and maps it 
+// we don't end up using this for anlaysis because we use merged fire shapefiles instead
+var LA_Basin = Air_basins.filter(ee.Filter.eq('ID', 2));
+Map.addLayer(LA_Basin, {}, "Air basins")
+
+// merge Palisades and Eaton fire shapefiles into one
+var merged_fires = Palisades.merge(Eaton);
+
+// Define date ranges of interest
+// during-fire date range
+var startDate = ee.Date('2025-01-07');
+var endDate = ee.Date('2025-01-31');
+
+// pre-fire date range
+var startPre = ee.Date('2024-12-01');
+var endPre = ee.Date('2025-01-07');
+
+// post-fire date range
+var startPost = ee.Date('2025-01-31');
+var endPost = ee.Date('2025-03-01');
+
+// scaling factors including the ppb multiplying
+var fHCHO = 1.35E-16
+var fNO2 = 6.56E-16
+
+
+// Filter datasets by date ranges and bounds
+// Filtering for during-fire 
+var HCHO_filtered = HCHO
+  .filterDate(startDate, endDate)
+  .filterBounds(merged_fires);
+var NO2_filtered = NO2
+  .filterDate(startDate, endDate)
+  .filterBounds(merged_fires);
+  
+// Filtering for pre-fire
+var HCHO_filtered_pre = HCHO
+  .filterDate(startPre, endPre)
+  .filterBounds(merged_fires);
+var NO2_filtered_pre  = NO2
+  .filterDate(startPre, endPre)
+  .filterBounds(merged_fires);
+ 
+// Filtering for post-fire
+var HCHO_filtered_post = HCHO
+  .filterDate(startPost, endPost)
+  .filterBounds(merged_fires);
+var NO2_filtered_post = NO2
+  .filterDate(startPost, endPost)
+  .filterBounds(merged_fires);
+
+// Calculating mean HCHO and NO2 over filtered data
+// for during-fire images:
+var HCHO_mean = HCHO_filtered.map(function(img) {
+  var mean = img.reduceRegion({
+    reducer: ee.Reducer.mean(),
+    geometry: merged_fires.geometry(),
+    scale: 1000,
+    maxPixels: 1e13
+  });
+  var raw = mean.get('vertical_column');
+  return ee.Feature(null, {
+    'date': img.date().format('YYYY-MM-dd'),
+    'HCHO_mean': ee.Algorithms.If(
+      ee.Algorithms.IsEqual(raw, null),
+      null,
+      ee.Number(raw).multiply(fHCHO)
+    )
+  });
+});
+var duringList = HCHO_mean.aggregate_array('HCHO_mean'); 
+var duringMean = ee.Number(duringList.reduce(ee.Reducer.mean()));
+
+var NO2_mean = NO2_filtered.map(function(img) {
+  var mean = img.reduceRegion({
+    reducer: ee.Reducer.mean(),
+    geometry: merged_fires.geometry(),
+    scale: 1000,
+    maxPixels: 1e13
+  });
+  var raw = mean.get('vertical_column_troposphere');
+  return ee.Feature(null, {
+    'date': img.date().format('YYYY-MM-dd'),
+    'NO2_mean': ee.Algorithms.If(
+      ee.Algorithms.IsEqual(raw, null),
+      null,
+      ee.Number(raw).multiply(fNO2)
+    )
+  });
+});
+var duringList1 = NO2_mean.aggregate_array('NO2_mean');
+var duringMean1 = ee.Number(duringList1.reduce(ee.Reducer.mean()));
+
+// for pre-fire images:
+var HCHO_mean_pre = HCHO_filtered_pre.map(function(img) {
+  var mean = img.reduceRegion({
+    reducer: ee.Reducer.mean(),
+    geometry: merged_fires.geometry(),
+    scale: 1000,
+    maxPixels: 1e13
+  });
+  var raw = mean.get('vertical_column');
+  return ee.Feature(null, {
+    'date': img.date().format('YYYY-MM-dd'),
+    'HCHO_mean': ee.Algorithms.If(
+      ee.Algorithms.IsEqual(raw, null),
+      null,
+      ee.Number(raw).multiply(fHCHO)
+    )
+  });
+});
+var duringList2 = HCHO_mean_pre.aggregate_array('HCHO_mean');
+var duringMean2 = ee.Number(duringList2.reduce(ee.Reducer.mean()));
+
+var NO2_mean_pre = NO2_filtered_pre.map(function(img) {
+  var mean = img.reduceRegion({
+    reducer: ee.Reducer.mean(),
+    geometry: merged_fires.geometry(),
+    scale: 1000,
+    maxPixels: 1e13
+  });
+  var raw = mean.get('vertical_column_troposphere');
+  return ee.Feature(null, {
+    'date': img.date().format('YYYY-MM-dd'),
+    'NO2_mean': ee.Algorithms.If(
+      ee.Algorithms.IsEqual(raw, null),
+      null,
+      ee.Number(raw).multiply(fNO2)
+    )
+  });
+});
+var duringList3 = NO2_mean_pre.aggregate_array('NO2_mean');
+var duringMean3 = ee.Number(duringList3.reduce(ee.Reducer.mean()));
+
+// For post-fire images:
+var HCHO_mean_post = HCHO_filtered_post.map(function(img) {
+  var mean = img.reduceRegion({
+    reducer: ee.Reducer.mean(),
+    geometry: merged_fires.geometry(),
+    scale: 1000,
+    maxPixels: 1e13
+  });
+  var raw = mean.get('vertical_column');
+  return ee.Feature(null, {
+    'date': img.date().format('YYYY-MM-dd'),
+    'HCHO_mean': ee.Algorithms.If(
+      ee.Algorithms.IsEqual(raw, null),
+      null,
+      ee.Number(raw).multiply(fHCHO)
+    )
+  });
+});
+var duringList4 = HCHO_mean_post.aggregate_array('HCHO_mean');
+var duringMean4 = ee.Number(duringList4.reduce(ee.Reducer.mean()));
+
+var NO2_mean_post = NO2_filtered_post.map(function(img) {
+  var mean = img.reduceRegion({
+    reducer: ee.Reducer.mean(),
+    geometry: merged_fires.geometry(),
+    scale: 1000,
+    maxPixels: 1e13
+  });
+  var raw = mean.get('vertical_column_troposphere');
+  return ee.Feature(null, {
+    'date': img.date().format('YYYY-MM-dd'),
+    'NO2_mean': ee.Algorithms.If(
+      ee.Algorithms.IsEqual(raw, null),
+      null,
+      ee.Number(raw).multiply(fNO2)
+    )
+  });
+});
+var duringList5 = NO2_mean_post.aggregate_array('NO2_mean');
+var duringMean5 = ee.Number(duringList5.reduce(ee.Reducer.mean()));
+
+
+// compute HCHO to NO2 (FNR) ratio
+// Drop any features where HCHO or NO2 came back null
+var HCHO_mean_clean = HCHO_mean.filter(
+  ee.Filter.notNull(['HCHO_mean'])
+);
+var NO2_mean_clean = NO2_mean.filter(
+  ee.Filter.notNull(['NO2_mean'])
+);
+
+// Join on date with cleaned collection
+var join   = ee.Join.inner('HCHO', 'NO2');
+var filter = ee.Filter.equals({
+  leftField:  'date',
+  rightField: 'date'
+});
+var joined = join.apply(HCHO_mean_clean, NO2_mean_clean, filter);
+
+// Computing FNR
+var ratioCollection = joined.map(function(feature) {
+  var hcho = ee.Number(
+    ee.Feature(feature.get('HCHO')).get('HCHO_mean')
+  );
+   var no2 = ee.Number(
+    ee.Feature(feature.get('NO2')).get('NO2_mean')
+  );
+  var date = ee.Feature(feature.get('HCHO')).get('date');
+
+  return ee.Feature(null, {
+    'date':           date,
+    'HCHO_NO2_ratio': hcho.divide(no2)
+  });
+});
+
+// Chart
+var chart = ui.Chart.feature.byFeature({
+  features:    ratioCollection,
+  xProperty:   'date',
+  yProperties: ['HCHO_NO2_ratio']
+}).setChartType('LineChart')
+  .setOptions({
+    title:     'HCHO / NO₂ ratio — during fire period',
+      vAxis:     { title: 'HCHO / NO₂' },
+      hAxis:     { title: 'Date' },
+      lineWidth: 2,
+      pointSize: 4,
+      colors:    ['#7F77DD']
+    });
+
+print(chart);
+
+
+// Convert feature collections to charts
+var HCHO_chart = ui.Chart.feature.byFeature(HCHO_mean, 'date', 'HCHO_mean') // edit as needed
+  .setOptions({
+    title: 'Time Series of Mean HCHO over Fires (Jan 7 to Jan 31 2025)', // edit as needed
+    hAxis: {title: 'Date'},
+    vAxis: {title: 'HCHO (ppb)'},
+    lineWidth: 2,
+    pointSize: 3,
+    series: {0: {color: 'orange'}}
+  });
+
+var NO2_chart = ui.Chart.feature.byFeature(NO2_mean, 'date', 'NO2_mean') // edit as needed
+  .setOptions({
+    title: 'Time Series of Mean NO₂ over Fires (Jan 7 to Jan 31 2025)', // edit as needed
+    hAxis: {title: 'Date'},
+    vAxis: {title: 'NO₂ (ppb)'},
+    lineWidth: 2,
+    pointSize: 3,
+    series: {0: {color: 'blue'}}
+  });
+
+// Print charts to the console
+print(HCHO_chart);
+print(NO2_chart);
+
+// Print mean values to the console (then copied into Excel to graph) 
+print(duringMean1);
+print(duringMean2);
+print(duringMean3);
+print(duringMean4);
+print(duringMean5);
+print(duringMean);
+
+// Visualize average maps for the entire period
+var meanHCHO_img = HCHO_filtered.mean().select('vertical_column').clip(merged_fires);
+var meanNO2_img = NO2_filtered.mean().select('vertical_column_troposphere').clip(merged_fires);
+
+Map.addLayer(meanHCHO_img, {
+  palette: ['green', 'white', 'red'],
+  min: 0,
+  max: 100
+}, 'Mean HCHO ppb (Dec 2024 - Mar 2025)');
+
+Map.addLayer(meanNO2_img, {
+  palette: ['green', 'white', 'red'],
+  min: 0,
+  max: 100
+}, 'Mean NO2 ppb (Dec 2024 - Mar 2025)');
+
+// Print daily averages as tables
+print('Daily HCHO (during fire):', HCHO_mean);
+print('Daily NO2 (during fire):', NO2_mean);
+print('Daily HCHO (pre-fire):', HCHO_mean_pre);
+print('Daily NO2 (pre-fire):', NO2_mean_pre);
+print('Daily HCHO (post-fire):', HCHO_mean_post);
+print('Daily NO2 (post-fire):', NO2_mean_post);
+
+Export.table.toDrive({
+  collection: HCHO_mean,
+  description: 'HCHO_daily_during_fire',
+  fileFormat: 'CSV',
+  selectors: ['date', 'HCHO_mean']
+});
+
+Export.table.toDrive({
+  collection: NO2_mean,
+  description: 'NO2_daily_during_fire',
+  fileFormat: 'CSV',
+  selectors: ['date', 'NO2_mean']
+});
+
+Export.table.toDrive({
+  collection: HCHO_mean_pre,
+  description: 'HCHO_daily_before_fire',
+  fileFormat: 'CSV',
+  selectors: ['date', 'HCHO_mean']
+});
+
+Export.table.toDrive({
+  collection: NO2_mean_pre,
+  description: 'NO2_daily_before_fire',
+  fileFormat: 'CSV',
+  selectors: ['date', 'NO2_mean']
+});
+
+Export.table.toDrive({
+  collection: HCHO_mean_post,
+  description: 'HCHO_daily_after_fire',
+  fileFormat: 'CSV',
+  selectors: ['date', 'HCHO_mean']
+});
+
+Export.table.toDrive({
+  collection: NO2_mean_post,
+  description: 'NO2_daily_after_fire',
+  fileFormat: 'CSV',
+  selectors: ['date', 'NO2_mean']
+});
+
+// getting merged charts and results
+// Combine pre, during, and post into single collections, dropping nulls
+var HCHO_all = HCHO_mean_pre
+  .merge(HCHO_mean)
+  .merge(HCHO_mean_post)
+  .filter(ee.Filter.notNull(['HCHO_mean']));
+
+var NO2_all = NO2_mean_pre
+  .merge(NO2_mean)
+  .merge(NO2_mean_post)
+  .filter(ee.Filter.notNull(['NO2_mean']));
+  
+// // Deduplicate: keep only one feature per date
+// var HCHO_all = ee.FeatureCollection(
+//   HCHO_all.distinct('date')
+// );
+// var NO2_all = ee.FeatureCollection(
+//   NO2_all.distinct('date')
+// );
+
+var join   = ee.Join.inner('HCHO', 'NO2');
+var filter = ee.Filter.equals({
+  leftField:  'date',
+  rightField: 'date'
+});
+var joined_all = join.apply(HCHO_all, NO2_all, filter);
+
+var ratio_all = joined_all.map(function(feature) {
+  var hcho = ee.Number(
+    ee.Feature(feature.get('HCHO')).get('HCHO_mean')
+  );
+  var no2 = ee.Number(
+    ee.Feature(feature.get('NO2')).get('NO2_mean')
+  );
+  var date = ee.Feature(feature.get('HCHO')).get('date');
+  return ee.Feature(null, {
+    'date':           date,
+    'HCHO_NO2_ratio': hcho.divide(no2)
+  });
+});
+
+// HCHO over time
+print(ui.Chart.feature.byFeature({
+  features:    HCHO_all,
+  xProperty:   'date',
+  yProperties: ['HCHO_mean']
+}).setChartType('LineChart')
+  .setOptions({
+    title:     'HCHO — Dec 1 to Mar 1',
+    vAxis:     { title: 'HCHO (ppb)' },
+    hAxis:     { title: 'Date' },
+    lineWidth: 2, pointSize: 4,
+    colors:    ['#1D9E75']
+  }));
+  
+// NO₂ over time
+print(ui.Chart.feature.byFeature({
+  features:    NO2_all,
+  xProperty:   'date',
+  yProperties: ['NO2_mean']
+}).setChartType('LineChart')
+  .setOptions({
+    title:     'NO₂ — Dec 1 to Mar 1',
+    vAxis:     { title: 'NO₂ (ppb)' },
+    hAxis:     { title: 'Date' },
+    lineWidth: 2, pointSize: 4,
+    colors:    ['#D85A30']
+  }));
+  
+// HCHO/NO₂ ratio over time
+print(ui.Chart.feature.byFeature({
+  features:    ratio_all,
+  xProperty:   'date',
+  yProperties: ['HCHO_NO2_ratio']
+}).setChartType('LineChart')
+  .setOptions({
+    title:     'HCHO / NO₂ ratio — Dec 1 to Mar 1',
+    vAxis:     { title: 'HCHO / NO₂' },
+    hAxis:     { title: 'Date' },
+    lineWidth: 2, pointSize: 4,
+    colors:    ['#7F77DD']
+  }));
+  
+  
