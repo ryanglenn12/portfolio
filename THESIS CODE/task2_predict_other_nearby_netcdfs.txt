@@ -1,0 +1,130 @@
+library(dplyr)
+library(readr)
+library(stringr)
+library(tibble)
+library(purrr)
+
+# -----------------------------
+# User settings
+# -----------------------------
+task1_csv <- "D:/Ryan/Thesis/Palisades_TEMPO/TEMPO_PM25/tempo_scene_centers_sorted1.csv"
+output_csv <- "D:/Ryan/Thesis/Palisades_TEMPO/TEMPO_PM25/tempo_task2_leave_one_day_out_cv1.csv"
+
+target_lat <- 34.15
+target_lon <- -118.16
+
+# -----------------------------
+# Helpers
+# -----------------------------
+haversine_km <- function(lat1, lon1, lat2, lon2) {
+  R <- 6371.0
+  to_rad <- pi / 180
+  
+  lat1 <- lat1 * to_rad
+  lon1 <- lon1 * to_rad
+  lat2 <- lat2 * to_rad
+  lon2 <- lon2 * to_rad
+  
+  dlat <- lat2 - lat1
+  dlon <- lon2 - lon1
+  
+  a <- sin(dlat / 2)^2 + cos(lat1) * cos(lat2) * sin(dlon / 2)^2
+  2 * R * atan2(sqrt(a), sqrt(1 - a))
+}
+
+# -----------------------------
+# Load Task 1 data
+# -----------------------------
+obs <- read_csv(task1_csv, show_col_types = FALSE) %>%
+  mutate(
+    file_date = as.Date(str_extract(file_name, "\\d{8}"), format = "%Y%m%d"),
+    hour = as.integer(str_extract(file_name, "(?<=T)\\d{2}"))
+  ) %>%
+  filter(
+    gw_valid > 0,
+    is.finite(gw_center_lat),
+    is.finite(gw_center_lon),
+    is.finite(gw_distance_km)
+  )
+
+if (nrow(obs) < 3) {
+  stop("Not enough GW-valid scenes for cross-validation.")
+}
+
+days <- sort(unique(obs$file_date))
+
+cv_results <- map_dfr(days, function(test_day) {
+  train <- obs %>% filter(file_date != test_day)
+  test  <- obs %>% filter(file_date == test_day)
+  
+  if (nrow(train) < 3 || nrow(test) == 0) {
+    return(NULL)
+  }
+  
+  train <- train %>%
+    mutate(day_index = as.numeric(file_date - min(file_date, na.rm = TRUE)))
+  
+  train_origin <- min(train$file_date, na.rm = TRUE)
+  
+  test <- test %>%
+    mutate(day_index = as.numeric(file_date - train_origin))
+  
+  fit_lat <- lm(gw_center_lat ~ day_index + hour, data = train)
+  fit_lon <- lm(gw_center_lon ~ day_index + hour, data = train)
+  
+  test <- test %>%
+    mutate(
+      pred_lat = predict(fit_lat, newdata = test),
+      pred_lon = predict(fit_lon, newdata = test),
+      residual_lat = gw_center_lat - pred_lat,
+      residual_lon = gw_center_lon - pred_lon,
+      residual_km = mapply(haversine_km, gw_center_lat, gw_center_lon, pred_lat, pred_lon)
+    )
+  
+  test %>%
+    mutate(
+      held_out_day = test_day,
+      train_n = nrow(train),
+      test_n = nrow(test),
+      lat_r2_train = summary(fit_lat)$r.squared,
+      lon_r2_train = summary(fit_lon)$r.squared
+    ) %>%
+    select(
+      held_out_day, file_name, file_date, hour,
+      train_n, test_n,
+      gw_center_lat, gw_center_lon,
+      pred_lat, pred_lon,
+      residual_lat, residual_lon, residual_km,
+      lat_r2_train, lon_r2_train
+    )
+})
+
+if (nrow(cv_results) == 0) {
+  stop("No cross-validation results were produced.")
+}
+
+write_csv(cv_results, output_csv)
+
+cat("\nWrote cross-validation results to:", output_csv, "\n")
+
+# -----------------------------
+# Summary statistics
+# -----------------------------
+cat("\nCross-validation summary\n")
+cat("------------------------\n")
+cat("N predictions:", nrow(cv_results), "\n")
+cat("Mean absolute error (km):", mean(abs(cv_results$residual_km), na.rm = TRUE), "\n")
+cat("RMSE (km):", sqrt(mean(cv_results$residual_km^2, na.rm = TRUE)), "\n")
+cat("Median absolute error (km):", median(abs(cv_results$residual_km), na.rm = TRUE), "\n")
+
+cat("\nBy held-out day:\n")
+by_day <- cv_results %>%
+  group_by(held_out_day) %>%
+  summarise(
+    n = n(),
+    mae_km = mean(abs(residual_km), na.rm = TRUE),
+    rmse_km = sqrt(mean(residual_km^2, na.rm = TRUE)),
+    .groups = "drop"
+  )
+
+print(by_day)
