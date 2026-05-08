@@ -1,0 +1,142 @@
+install.packages("sf")
+install.packages("terra")
+install.packages("gstat")
+
+library(ncdf4)
+library(dplyr)
+library(readr)
+library(stringr)
+library(tibble)
+library(terra)
+library(gstat)
+# -----------------------------
+# User settings
+# -----------------------------
+root_dir <- "D:/Ryan/Thesis/Palisades_TEMPO/TEMPO_PM25/netcdf1"   # folder containing all downloaded TEMPO .nc files
+out_csv_dir <- "D:/Ryan/Thesis/Palisades_TEMPO/TEMPO_PM25/TEMPO_PM25_csv"      # per-file CSVs
+out_tif_dir  <- "D:/Ryan/Thesis/Palisades_TEMPO/TEMPO_PM25/TEMPO_PM25_tif"     # per-file GeoTIFFs
+dir.create(out_csv_dir, showWarnings = FALSE, recursive = TRUE)
+dir.create(out_tif_dir, showWarnings = FALSE, recursive = TRUE)
+# Bounding box around Los Angeles area
+lat_min <- 31
+lat_max <- 37
+lon_min <- -121
+lon_max <- -115
+# Output raster settings
+target_crs <- "EPSG:32611"   # UTM Zone 11N, WGS84
+res_m <- 2000                # 2 x 2 km grid
+# IDW settings
+idw_power <- 1               # first-order inverse distance weighting
+idw_nmax <- 12               # use up to 12 nearest points for interpolation
+# -----------------------------
+# Helpers
+# -----------------------------
+read_gw_points <- function(nc_path, lat_min, lat_max, lon_min, lon_max) {
+  nc <- nc_open(nc_path)
+  on.exit(nc_close(nc), add = TRUE)
+  lat <- ncvar_get(nc, "geolocation/lat_gw")
+  lon <- ncvar_get(nc, "geolocation/lon_gw")
+  pm  <- ncvar_get(nc, "product/pm25sat_gw")
+  tibble(
+    file_name = basename(nc_path),
+    lat = as.vector(lat),
+    lon = as.vector(lon),
+    pm25 = as.vector(pm)
+  ) %>%
+    filter(
+      is.finite(lat),
+      is.finite(lon),
+      is.finite(pm25),
+      lat >= lat_min,
+      lat <= lat_max,
+      lon >= lon_min,
+      lon <= lon_max
+    )
+}
+make_idw_raster <- function(pts_sf, out_tif, res_m = 2000, target_crs = "EPSG:32611",
+                            idw_power = 1, idw_nmax = 12) {
+  if (nrow(pts_sf) == 0) return(FALSE)
+  # Project points to UTM 11N
+  pts_utm <- st_transform(pts_sf, target_crs)
+  # Convert to sf points with coordinates in projected space
+  coords <- st_coordinates(pts_utm)
+  dat <- st_drop_geometry(pts_utm)
+  spdf <- as_Spatial(pts_utm)
+  # Build a raster template from projected bounds
+  bb <- st_bbox(pts_utm)
+  r_template <- rast(
+    xmin = bb["xmin"],
+    xmax = bb["xmax"],
+    ymin = bb["ymin"],
+    ymax = bb["ymax"],
+    resolution = res_m,
+    crs = target_crs
+  )
+  # Create prediction grid
+  grid_pts <- as.data.frame(crds(r_template, df = TRUE))
+  names(grid_pts) <- c("x", "y")
+  grid_sf <- st_as_sf(grid_pts, coords = c("x", "y"), crs = target_crs)
+  # IDW interpolation via gstat
+  vgm_dummy <- gstat::gstat(formula = pm25 ~ 1, locations = spdf, set = list(idp = idw_power), nmax = idw_nmax)
+  pred <- predict(vgm_dummy, newdata = as(grid_sf, "Spatial"))
+  # Convert predictions back to raster
+  pred_df <- st_as_sf(pred)
+  pred_xy <- st_coordinates(pred_df)
+  pred_vals <- pred$var1.pred
+  r_out <- rast(r_template)
+  cells <- cellFromXY(r_out, pred_xy)
+  r_out[cells] <- pred_vals
+  names(r_out) <- "pm25sat_gw"
+  writeRaster(r_out, out_tif, overwrite = TRUE)
+  TRUE
+}
+# -----------------------------
+# Process all TEMPO netCDF files
+# -----------------------------
+files <- list.files(root_dir, pattern = "\\.nc$", recursive = TRUE, full.names = TRUE)
+if (length(files) == 0) stop("No netCDF files found in root_dir.")
+for (f in files) {
+  message("\nProcessing: ", basename(f))
+  # Read and clip points
+  pts_df <- tryCatch(
+    read_gw_points(f, lat_min, lat_max, lon_min, lon_max),
+    error = function(e) {
+      warning("Failed reading file: ", basename(f), " | ", e$message)
+      return(NULL)
+    }
+  )
+  if (is.null(pts_df) || nrow(pts_df) == 0) {
+    warning("No valid GW points inside bbox for: ", basename(f))
+    next
+  }
+  # Write per-file CSV immediately
+  csv_name <- paste0(str_remove(basename(f), "\\.nc$"), "_gw_clip.csv")
+  csv_path <- file.path(out_csv_dir, csv_name)
+  write_csv(pts_df, csv_path)
+  message("Wrote CSV: ", csv_path)
+  # Build sf points in WGS84
+  pts_sf <- st_as_sf(pts_df, coords = c("lon", "lat"), crs = 4326, remove = FALSE)
+  # Write projected GeoTIFF immediately
+  tif_name <- paste0(str_remove(basename(f), "\\.nc$"), "_gw_utm11n_2km_idw.tif")
+  tif_path <- file.path(out_tif_dir, tif_name)
+  ok <- tryCatch(
+    make_idw_raster(
+      pts_sf = pts_sf,
+      out_tif = tif_path,
+      res_m = res_m,
+      target_crs = target_crs,
+      idw_power = idw_power,
+      idw_nmax = idw_nmax
+    ),
+    error = function(e) {
+      warning("Failed rasterizing file: ", basename(f), " | ", e$message)
+      return(FALSE)
+    }
+  )
+  if (isTRUE(ok)) {
+    message("Wrote GeoTIFF: ", tif_path)
+  } else {
+    warning("GeoTIFF not written for: ", basename(f))
+  }
+}
+
