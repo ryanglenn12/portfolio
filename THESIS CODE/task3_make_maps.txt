@@ -1,0 +1,143 @@
+install.packages("maps")
+install.packages("ggplot2")
+
+library(ncdf4)
+library(dplyr)
+library(readr)
+library(stringr)
+library(tibble)
+library(ggplot2)
+library(maps)
+
+# -----------------------------
+# User settings
+# -----------------------------
+task1_csv <- "D:/Ryan/Thesis/Palisades_TEMPO/TEMPO_PM25/tempo_scene_centers_sorted1.csv"
+root_dir <- "D:/Ryan/Thesis/Palisades_TEMPO/TEMPO_PM25/netcdf1"   # <-- change to your root folder
+out_dir <- "D:/Ryan/Thesis/Palisades_TEMPO/TEMPO_PM25/maps"         # <-- change me
+dir.create(out_dir, showWarnings = FALSE, recursive = TRUE)
+
+distance_threshold_km <- 500
+
+# -----------------------------
+# Helpers
+# -----------------------------
+parse_timestamp <- function(file_name) {
+  m <- str_match(file_name, ".*_(\\d{8})T(\\d{6})Z\\.nc$")
+  if (any(is.na(m))) return(NA_character_)
+  paste0(m[2], "T", m[3], "Z")
+}
+
+read_gw_data <- function(nc_path) {
+  nc <- nc_open(nc_path)
+  on.exit(nc_close(nc), add = TRUE)
+  
+  lat <- ncvar_get(nc, "geolocation/lat_gw")
+  lon <- ncvar_get(nc, "geolocation/lon_gw")
+  pm  <- ncvar_get(nc, "product/pm25sat_gw")
+  
+  list(lat = lat, lon = lon, pm = pm)
+}
+
+# -----------------------------
+# Select files
+# -----------------------------
+files <- read_csv(task1_csv, show_col_types = FALSE) %>%
+  filter(gw_valid > 0, is.finite(gw_distance_km), gw_distance_km < distance_threshold_km) %>%
+  mutate(
+    timestamp_utc = parse_timestamp(file_name),
+    file_path = file.path(root_dir, basename(file_path))
+  )
+
+if (nrow(files) == 0) {
+  stop("No files found with gw_distance_km under the threshold.")
+}
+
+# -----------------------------
+# Plot and save each file
+# -----------------------------
+for (i in seq_len(nrow(files))) {
+  row <- files[i, ]
+  
+  if (!file.exists(row$file_path)) {
+    warning("Missing file: ", row$file_path)
+    next
+  }
+  
+  data <- tryCatch(read_gw_data(row$file_path), error = function(e) NULL)
+  if (is.null(data)) {
+    warning("Could not read file: ", row$file_path)
+    next
+  }
+  
+  df <- tibble(
+    lat = as.vector(data$lat),
+    lon = as.vector(data$lon),
+    pm25 = as.vector(data$pm)
+  ) %>%
+    filter(is.finite(lat), is.finite(lon), is.finite(pm25))
+  
+  if (nrow(df) == 0) {
+    warning("No valid PM2.5 data in: ", row$file_name)
+    next
+  }
+  
+  # Get a rough regional bounding box around the valid data
+  lat_rng <- range(df$lat, na.rm = TRUE)
+  lon_rng <- range(df$lon, na.rm = TRUE)
+  
+  # Choose graticule intervals
+  lat_breaks <- seq(floor(lat_rng[1]), ceiling(lat_rng[2]), by = 2)
+  lon_breaks <- seq(floor(lon_rng[1]), ceiling(lon_rng[2]), by = 2)
+  
+  p <- ggplot() +
+    geom_point(
+      data = df,
+      aes(x = lon, y = lat, color = pm25),
+      size = 0.6, alpha = 0.9
+    ) +
+    scale_color_viridis_c(
+      name = expression(PM[2.5]~(mu*g/m^3)),
+      option = "inferno",
+      limits = c(0, 50),
+      oob = scales::squish
+    ) +
+    geom_hline(
+      data = tibble(y = lat_breaks),
+      aes(yintercept = y),
+      color = "green",
+      linewidth = 0.3
+    ) +
+    geom_vline(
+      data = tibble(x = lon_breaks),
+      aes(xintercept = x),
+      color = "green",
+      linewidth = 0.3
+    ) +
+    borders("state", colour = "blue", fill = NA, linewidth = 0.5) +
+    coord_quickmap(
+      xlim = c(lon_rng[1] - 3, lon_rng[2] + 3),
+      ylim = c(lat_rng[1] - 3, lat_rng[2] + 3)
+    ) +
+    labs(
+      title = paste0("TEMPO-ABI PM2.5: ", row$file_name),
+      subtitle = paste0("UTC time: ", row$timestamp_utc,
+                        " | GW distance to target: ", round(row$gw_distance_km, 1), " km"),
+      x = "Longitude",
+      y = "Latitude"
+    ) +
+    theme_minimal(base_size = 11) +
+    theme(
+      panel.grid = element_blank(),
+      panel.grid.minor = element_blank(),
+      legend.position = "right"
+    )
+  
+  out_file <- file.path(
+    out_dir,
+    paste0(str_remove(row$file_name, "\\.nc$"), ".png")
+  )
+  
+  ggsave(out_file, plot = p, width = 9, height = 7, dpi = 150)
+  message("Saved: ", out_file)
+}
